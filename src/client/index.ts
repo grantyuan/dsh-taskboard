@@ -15,6 +15,7 @@ import { BoardController } from './controller.ts'
 import { disposeI18n, initI18n } from './i18n/runtime.ts'
 import { injectStyles } from './styles.ts'
 import { mountBoardPanel } from './official-panel.tsx'
+import { registerBoardSidebarTab } from './sidebar-tab.tsx'
 import { createSessionJumper, type SessionsServiceFace, type UiWorkspaceFace, type WorkspacesServiceFace } from './session-jump.ts'
 
 /** Client plugin name. */
@@ -278,6 +279,8 @@ export function apply(ctx: ClientContextFace): void {
     try {
       // The host owns panel registration and visibility.
       disposers.push(mountBoardPanel(ctx, controller))
+      // Same board as a right-sidebar tab when that host service exists.
+      disposers.push(registerBoardSidebarTab(ctx, controller))
     } catch (error) {
       // DOM failures degrade the board, never the GUI.
       console.error('[dsh-taskboard] mount failed:', error)

@@ -6,7 +6,7 @@
  *
  * @module dsh-taskboard/host/store
  */
-import { mkdir, open, readFile, readdir, rename } from 'node:fs/promises'
+import { mkdir, open, readFile, readdir, rename, stat } from 'node:fs/promises'
 import { withLedgerWriteLock } from './ledger-lock.ts'
 import { applyHumanWaitingPatch } from '../shared/human-wait.ts'
 import { basename, dirname, join } from 'node:path'
@@ -31,6 +31,13 @@ export interface LedgerChange {
   /** What kind of mutation this was (for SSE event naming later). */
   kind: 'task-created' | 'task-updated' | 'task-moved' | 'task-deleted' | 'comment-added' | 'execution-recorded' | 'settings-updated' | 'ledger-replaced' | 'external-sync-updated'
 }
+
+/** Process-wide commit counter per ledger path. Two TaskStore instances on
+ * the same file can rename-overwrite within one mtimeMs tick with identical
+ * size (and macOS may even reuse the inode number), so a pure stat stamp can
+ * miss a sibling's commit. Every in-process persist bumps this epoch; a stamp
+ * older than the current epoch forces a reload no matter what stat shows. */
+const ledgerCommits = new Map<string, number>()
 
 /** Options for {@link TaskStore}. */
 export interface TaskStoreOptions {
@@ -58,6 +65,13 @@ export class TaskStore {
   private loadPromise: Promise<void> | undefined
   private loadFailure?: Error
   private hasReadLedger = false
+  /**
+   * Identity of the file bytes written by THIS instance's last successful
+   * commit (mtimeMs+size+ino of the renamed file, plus the in-process
+   * commit epoch at persist time). Lets mutate() skip the full
+   * re-read/re-parse when nothing external touched the ledger.
+   */
+  private persistedStamp: { mtimeMs: number; size: number; ino: number; epoch: number } | undefined
 
   /** @param options - file location. */
   constructor(options: TaskStoreOptions) {
@@ -96,7 +110,35 @@ export class TaskStore {
   }
 
   /** Switch future writes after a prepared migration commits. */
-  setLocation(file: string): void { this.file = file }
+  setLocation(file: string): void {
+    this.file = file
+    this.persistedStamp = undefined
+  }
+
+  /** Identity of the ledger file bytes on disk (undefined if unreadable). */
+  private async diskStamp(file: string): Promise<{ mtimeMs: number; size: number; ino: number } | undefined> {
+    try {
+      const s = await stat(file)
+      return { mtimeMs: s.mtimeMs, size: s.size, ino: s.ino }
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * True when the file on disk is exactly what THIS instance last
+   * persisted — no external writer touched it, so the in-memory ledger is
+   * already the on-disk truth and a reload is redundant.
+   */
+  private async ledgerMatchesDisk(file: string): Promise<boolean> {
+    if (this.persistedStamp === undefined || !this.loaded || this.loadFailure !== undefined) return false
+    if ((ledgerCommits.get(file) ?? 0) !== this.persistedStamp.epoch) return false
+    const stamp = await this.diskStamp(file)
+    return stamp !== undefined
+      && stamp.mtimeMs === this.persistedStamp.mtimeMs
+      && stamp.size === this.persistedStamp.size
+      && stamp.ino === this.persistedStamp.ino
+  }
 
   /** Serialize one operation with every TaskStore in this host for this file. */
   private inProcessWriteLane<T>(file: string, run: () => Promise<T>): Promise<T> {
@@ -261,17 +303,23 @@ export class TaskStore {
       const file = this.file
       return this.inProcessWriteLane(file, async () => withLedgerWriteLock(file, async () => {
         // A different TaskStore may have committed while this instance waited.
-        // Reload under the lock: a cached-revision check before it leaves a
-        // TOCTOU window in which two writers emit the same next revision.
-        await this.reload()
+        // Reload under the lock — unless the file is still exactly what THIS
+        // instance last persisted (size+mtime+ino match): the in-memory ledger
+        // is then already the on-disk truth, and the full reload (read + parse
+        // + validate) is pure latency on every single mutation.
+        if (!await this.ledgerMatchesDisk(file)) await this.reload()
         const draft: TaskLedger = structuredClone(this.ledger)
         const changed = mutator(draft)
         if (changed === undefined) return { ledger: deepFreeze(structuredClone(this.ledger)), changed: [] }
         for (const task of changed) pruneExecutions(task)
         draft.revision += 1
+        const epoch = (ledgerCommits.get(file) ?? 0) + 1
+        ledgerCommits.set(file, epoch)
         await persistAtomic(file, JSON.stringify(draft))
         this.hasReadLedger = true
         this.ledger = draft
+        const stamp = await this.diskStamp(file)
+        this.persistedStamp = stamp === undefined ? undefined : { ...stamp, epoch }
         const change: LedgerChange = { revision: draft.revision, tasks: changed, kind }
         for (const fn of this.subscribers) {
           try {

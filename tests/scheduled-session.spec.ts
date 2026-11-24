@@ -67,6 +67,9 @@ async function fixture() {
   const finish = async (id: string, service = svc, ledger = store) => {
     idle.get(id)?.()
     await waitFor(() => ledger.get(task.id)!.executions.at(-1)!.outcome !== 'running')
+    // The outcome write lands before the service drops its run-slot bookkeeping;
+    // wait for the slot to clear (it always does) instead of racing the cleanup.
+    await waitFor(() => service.inFlight() === 0)
     expect(service.inFlight()).toBe(0)
     now += 100
   }

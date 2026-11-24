@@ -98,8 +98,12 @@ describe('issue #42: response errors and partial refresh', () => {
     workspacesFail = true
     await controller.refresh()
     expect(controller.getSnapshot().ledger.tasks).toHaveLength(1)
+    // Workspaces failures are silent from v0.10.1 on: the stale list is
+    // retained (background retry heals it) and the /workspaces timeout that
+    // this once surfaced as a banner is fixed server-side (stale-while-
+    // revalidate), so no 'workspaces: …' error string is set anymore.
+    expect(controller.getSnapshot().error).toBeUndefined()
     expect(controller.getSnapshot().workspaces).toEqual(workspaces)
-    expect(controller.getSnapshot().error).toBe('workspaces: broken workspaces')
 
     workspacesFail = false
     revision = 2

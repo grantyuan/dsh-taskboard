@@ -28,6 +28,10 @@ export const STYLES = `
 .dsh-atb-external button:disabled { opacity: .5; cursor: default; }
 .dsh-atb-external fieldset > div > label { flex: 1; }
 .dsh-atb-panel-root { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+/* Right-sidebar tab body: same board, narrow stage — .dsh-atb-columns already
+   scrolls horizontally at min-width 200px per column. */
+.dsh-atb-sidebar-root { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.dsh-atb-sidebar-root .dsh-atb-board { padding: 8px 10px; gap: 8px; }
 .dsh-atb-pglyph { display: inline-flex; align-items: center; }
 .dsh-atb-picon { position: relative; display: inline-flex; }
 button[class*="panelRow"]:has(.dsh-atb-pglyph) { position: relative; }

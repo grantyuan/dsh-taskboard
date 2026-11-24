@@ -151,7 +151,7 @@ export const ru: TaskboardDict = {
   'board.action.newTask': '+ Новая задача ▼',
   'board.action.blankTask': 'Пустая задача',
   'board.action.manageTemplates': '⌗ Управление шаблонами…',
-  'board.search.placeholder': 'Поиск по названию / ID…',
+  'board.search.placeholder': 'Поиск по названию / ID — запятая ищет сразу несколько карт…',
   'board.filter.allProjects': 'Все проекты',
   'board.sort.title': 'Сортировка внутри колонок',
   'board.sort.default': 'Порядок по умолчанию',
@@ -167,6 +167,8 @@ export const ru: TaskboardDict = {
   'board.action.diag': '⚙ Диагностика',
   'board.action.importTitle': 'Импорт реестра из JSON-бэкапа (сначала предпросмотр, затем объединение или замена)',
   'board.action.import': '⬆ Импорт',
+  'board.action.sidebarTitle': 'Открыть доску вкладкой правого сайдбара (она видна во время чата)',
+  'board.action.sidebar': '⇥ Сайдбар',
   'board.action.exportTitle': 'Экспорт реестра: полный JSON-бэкап или CSV со списком задач',
   'board.action.export': '⬇ Экспорт ▼',
   'board.export.jsonTitle': 'Полный бэкап реестра (включая историю выполнений и настройки доски); импортируйте его для восстановления',
@@ -683,6 +685,7 @@ export const ru: TaskboardDict = {
 
   // ── host-generated system comments (0.6.4; localized at render) ────
   'sys.execFailed': '[Система] Выполнение не удалось: {error}; задача возвращена в «К выполнению».',
+  'sys.claimReleasedArchived': '[Система] Сессия, взявшая задачу, архивирована и больше не может работать; блокировка автоматически снята, задача возвращена в «К выполнению».',
   'sys.commentWoke': '[Система] Комментарии пользователя доставлены — сессия {id} разбужена для их обработки.',
   'sys.endedWithComment': '[Система] Сессия выполнения завершилась с комментариями, но не была переведена на проверку; система перевела её на проверку автоматически.',
   'sys.endedNoHandoff': '[Система] Сессия выполнения завершилась без передачи по протоколу (нет комментариев, не переведена на проверку); система перевела её на проверку автоматически — проверьте, затем верните или примите.',

@@ -71,7 +71,8 @@ const TASK_RE = new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)$`)
 const TASK_ACTION_RE = new RegExp(`^${ROUTE_PREFIX}/tasks/([^/]+)/([\\w-]+)$`)
 const ASSET_RE = new RegExp(`^${ROUTE_PREFIX}/assets/([a-f0-9]{64}\\.(?:png|jpg|gif|webp))$`)
 
-/** How long a workspace git-detection result stays cached (fail-soft). */
+/** After this age a cached git-detection result is revalidated in the
+ * background (stale-while-revalidate) instead of on the request path. */
 const GIT_DETECT_TTL_MS = 60_000
 
 /** The workspaces face routes need (same narrow shape as tools). */
@@ -363,12 +364,12 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
    * container shape (mirror root = plain dir, one worktree per nested repo),
    * so the form must not lock the capability away.
    */
-  const workspaceRepos = async (path: string): Promise<{ gitAvailable: boolean; repoCount: number }> => {
-    if (options.git === undefined) return { gitAvailable: false, repoCount: 0 }
-    const hit = gitCache.get(path)
-    if (hit !== undefined && options.now() - hit.at < GIT_DETECT_TTL_MS) {
-      return { gitAvailable: hit.value, repoCount: hit.repoCount ?? (hit.value ? 1 : 0) }
-    }
+  /** In-flight scans per path: cold waiters and background revalidations
+   * share one pass, so concurrent requests never stack duplicate scans. */
+  const gitPending = new Map<string, Promise<{ gitAvailable: boolean; repoCount: number }>>()
+
+  /** The full (expensive) detection pass: svn fast-path + git.detect + nested scan. */
+  const scanWorkspaceRepos = async (path: string): Promise<{ gitAvailable: boolean; repoCount: number }> => {
     // Fast-path: SVN repositories never host git mirrors — skip nested scans completely.
     try {
       const { stat } = await import('node:fs/promises')
@@ -379,7 +380,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
     } catch { /* not svn */ }
     let rootRepo = false
     try {
-      rootRepo = await options.git.detect(path)
+      rootRepo = await options.git!.detect(path)
     } catch { /* fail-soft → false */ }
     // gitignore 建议 (plan §3.2): suggest (never write) ignoring our
     // worktree directory, once per workspace per host run. Root repos only.
@@ -406,6 +407,39 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
     gitCache.set(path, { value, at: options.now(), repoCount })
     return { gitAvailable: value, repoCount }
   }
+
+  /**
+   * Stale-while-revalidate facade for /workspaces. A cached answer is
+   * served instantly; expiry only triggers a background (single-flight)
+   * revalidation instead of putting the scan back on the request path —
+   * full scans of large workspaces used to exceed the client's fetch
+   * timeout and surface as "workspaces: … request timed out".
+   */
+  const workspaceRepos = async (path: string): Promise<{ gitAvailable: boolean; repoCount: number }> => {
+    if (options.git === undefined) return { gitAvailable: false, repoCount: 0 }
+    const runScan = (): Promise<{ gitAvailable: boolean; repoCount: number }> => {
+      let pending = gitPending.get(path)
+      if (pending === undefined) {
+        pending = scanWorkspaceRepos(path).finally(() => { gitPending.delete(path) })
+        gitPending.set(path, pending)
+      }
+      return pending
+    }
+    const hit = gitCache.get(path)
+    if (hit !== undefined) {
+      if (options.now() - hit.at >= GIT_DETECT_TTL_MS && !gitPending.has(path)) {
+        void runScan().catch(() => { /* fail-soft: stale value stays */ })
+      }
+      return { gitAvailable: hit.value, repoCount: hit.repoCount ?? (hit.value ? 1 : 0) }
+    }
+    return runScan() // cold path: first request per host run pays the scan
+  }
+
+  // No boot-time warm timer: every route-created timer in the vitest pool
+  // landed next to the timing-sensitive scheduled-session suite (latent race)
+  // and the cold path already pays the scan exactly once per path; SWR then
+  // serves stale instantly. A timer that scanned every workspace list on a
+  // loop would only help the first picker paint — not worth the coupling.
 
   /** List orphan worktree dirs: entries under <ws>/.dsh-worktrees owned by no ledger task. */
   const listOrphanWorktrees = async (): Promise<Array<{ workspaceId: string; workspacePath: string; taskId: string; path: string }>> => {

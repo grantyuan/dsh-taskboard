@@ -152,7 +152,7 @@ export const zh = {
   'board.action.newTask': '+ 新建任务 ▼',
   'board.action.blankTask': '空白任务',
   'board.action.manageTemplates': '⌗ 管理模板…',
-  'board.search.placeholder': '搜索标题 / ID…',
+  'board.search.placeholder': '搜索标题 / ID，逗号分隔可同时查询多张卡…',
   'board.filter.allProjects': '全部项目',
   'board.sort.title': '列内排序',
   'board.sort.default': '默认排序',
@@ -168,6 +168,8 @@ export const zh = {
   'board.action.diag': '⚙ 诊断',
   'board.action.importTitle': '从 JSON 备份文件导入台账（预览后合并或整册替换）',
   'board.action.import': '⬆ 导入',
+  'board.action.sidebarTitle': '在右侧边栏以页签打开看板（聊天时保持可见）',
+  'board.action.sidebar': '⇥ 侧栏',
   'board.action.exportTitle': '导出台账：完整 JSON 备份或任务清单 CSV',
   'board.action.export': '⬇ 导出 ▼',
   'board.export.jsonTitle': '完整台账备份（含执行历史与看板设置），可用于导入恢复',
@@ -682,6 +684,7 @@ export const zh = {
 
   // ── host-generated system comments (0.6.4; localized at render) ────
   'sys.execFailed': '[系统] 执行失败：{error}；任务已退回待办。',
+  'sys.claimReleasedArchived': '[系统] 原领取会话已归档，无法继续工作；占用已自动释放，任务退回待办。',
   'sys.commentWoke': '[系统] 用户留言已投递，唤醒会话 {id} 处理。',
   'sys.endedWithComment': '[系统] 执行会话已结束并留有评论，但未移至待验收；系统自动移入待验收。',
   'sys.endedNoHandoff': '[系统] 执行会话已结束，但未按协议交接（无评论、未移至待验收）；系统自动移入待验收，请审查后退回或验收。',

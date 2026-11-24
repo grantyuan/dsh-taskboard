@@ -14,6 +14,7 @@ import { useT } from '../i18n/runtime.ts'
 import { localizeBuiltinName, localizeBuiltinTask } from '../i18n/templates.ts'
 import { categoryLabel, groupTemplatesByCategory } from '../template-categories.ts'
 import { fmtTime, isStaleClaim } from './format.ts'
+import { buildSearchTerms, matchesSearch } from './search.ts'
 import { humanWaiting } from '../../shared/human-wait.ts'
 import { DRAG_TYPE, TaskCard } from './TaskCard.tsx'
 import { TaskDetail } from './TaskDetail.tsx'
@@ -28,11 +29,13 @@ const URGENCY_RANK: Record<Urgency, number> = { urgent: 0, normal: 1, relaxed: 2
 
 /** Apply the active filters + search + sort to a task list. */
 export function filterTasks(state: ControllerState, tasks: TaskRecord[]): TaskRecord[] {
-  const q = state.search.trim().toLowerCase()
+  // Comma queries fan out into multiple candidate terms (see search.ts):
+  // "A,B,C" searches A / B / C / A,B / B,C / A,B,C as one OR-combined query.
+  const terms = buildSearchTerms(state.search)
   const filtered = tasks.filter(t =>
     (state.filters.workspaceId === undefined || t.workspaceId === state.filters.workspaceId)
     && (state.filters.urgencies.length === 0 || state.filters.urgencies.includes(t.urgency))
-    && (q.length === 0 || t.title.toLowerCase().includes(q) || t.id.toLowerCase().includes(q)))
+    && matchesSearch(terms, t.title, t.id))
   if (state.sortBy === 'default') return filtered
   const sorted = [...filtered]
   if (state.sortBy === 'updated') sorted.sort((a, b) => b.updatedAt - a.updatedAt)
@@ -321,6 +324,9 @@ export function TaskBoard({ controller }: { controller: BoardController }) {
         <button type="button" className="dsh-atb-btn" title={t('board.action.settingsTitle')} onClick={() => controller.openSettings()}>{t('board.action.settings')}</button>
         <button type="button" className="dsh-atb-btn" title={t('board.action.diagTitle')} onClick={() => controller.openDiagnostics()}>{t('board.action.diag')}</button>
         <button type="button" className="dsh-atb-btn" title={t('board.action.importTitle')} onClick={() => controller.openImport()}>{t('board.action.import')}</button>
+        {state.sidebarTabSupported === true && (
+          <button type="button" className="dsh-atb-btn" title={t('board.action.sidebarTitle')} onClick={() => controller.openSidebarTab()}>{t('board.action.sidebar')}</button>
+        )}
         <div className="dsh-atb-newmenu">
           <button
             type="button"

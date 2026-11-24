@@ -150,7 +150,7 @@ export const en: TaskboardDict = {
   'board.action.newTask': '+ New Task ▼',
   'board.action.blankTask': 'Blank task',
   'board.action.manageTemplates': '⌗ Manage templates…',
-  'board.search.placeholder': 'Search title / ID…',
+  'board.search.placeholder': 'Search title / ID — comma queries match several cards…',
   'board.filter.allProjects': 'All projects',
   'board.sort.title': 'Sort within columns',
   'board.sort.default': 'Default order',
@@ -166,6 +166,8 @@ export const en: TaskboardDict = {
   'board.action.diag': '⚙ Diagnostics',
   'board.action.importTitle': 'Import the ledger from a JSON backup (preview, then merge or replace)',
   'board.action.import': '⬆ Import',
+  'board.action.sidebarTitle': 'Open the board as a right-sidebar tab (keeps it visible while you chat)',
+  'board.action.sidebar': '⇥ Sidebar',
   'board.action.exportTitle': 'Export the ledger: full JSON backup or task-list CSV',
   'board.action.export': '⬇ Export ▼',
   'board.export.jsonTitle': 'Full ledger backup (execution history and board settings included); import it to restore',
@@ -680,6 +682,7 @@ export const en: TaskboardDict = {
 
   // ── host-generated system comments (0.6.4; localized at render) ────
   'sys.execFailed': '[System] Execution failed: {error}; the task was returned to todo.',
+  'sys.claimReleasedArchived': '[System] The claiming session was archived and can no longer work on this task; its hold was released automatically and the task returned to todo.',
   'sys.commentWoke': '[System] User comments delivered — woke session {id} to handle them.',
   'sys.endedWithComment': '[System] The execution session ended with comments but was not moved to in review; the system moved it to in review automatically.',
   'sys.endedNoHandoff': '[System] The execution session ended without a protocol handoff (no comments, not moved to in review); the system moved it to in review automatically — review it, then send back or accept.',

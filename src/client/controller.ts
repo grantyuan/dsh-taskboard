@@ -29,6 +29,10 @@ export type SortBy = 'default' | 'updated' | 'urgency' | 'created' | 'title'
 /** localStorage key for persisted view state (filters + sort). */
 const VIEW_KEY = 'dsh-taskboard-view-v1'
 
+/** Client-side TTL for refetching /workspaces (issue 1): the workspace list
+ * rarely changes, while SSE frames can arrive every second. */
+const WORKSPACES_TTL_MS = 120_000
+
 /** Load the persisted view state (never throws; fresh on any parse error). */
 function loadView(): { workspaceId?: string; urgencies: Urgency[]; sortBy: SortBy; doneCollapsed: boolean; backlogCollapsed: boolean; todoCollapsed: boolean; collapsedWorkspaceGroups?: string[] } {
   try {
@@ -100,6 +104,8 @@ export interface ControllerState {
   storageNotice?: { path: string; warnings: string[] }
   /** Fields a chosen template prefills into the create form (consumed on open). */
   templatePrefill?: TaskTemplateSpec
+  /** Right-sidebar tab opener is available (registered with the host sidebar). */
+  sidebarTabSupported?: boolean
   /** Transient error surface (action failures); cleared on next success. */
   error?: string
 }
@@ -137,10 +143,16 @@ export class BoardController {
   private disposed = false
   /** External close bridge (official panel mode); undefined in legacy mode. */
   private closeRequester: (() => void) | undefined
+  /** Right-sidebar tab opener, installed when the host sidebar accepts the tab. */
+  private sidebarTabOpener: (() => void) | undefined
   private disposeStream: (() => void) | undefined
   private refreshInFlight: Promise<void> | undefined
   /** Newest change-frame revision seen on the SSE stream (S16 refresh chase). */
   private seenRevision: number | undefined
+  /** Last attempted /workspaces fetch (0 = never; client-side TTL gate, issue 1). */
+  private workspacesAt = 0
+  /** One-shot background retry after a failed cold workspaces fetch. */
+  private workspacesRetry: ReturnType<typeof setTimeout> | undefined
   private sessionJumper: ((sessionId: string) => Promise<SessionJumpResult>) | undefined
   private sessionTitles: (() => Record<string, { displayTitle?: string; title?: string }>) | undefined
   /** Composer catalog faces, installed formally by the client entry (T13). */
@@ -207,9 +219,17 @@ export class BoardController {
         // newest seen revision — bounded rounds, then give up until the next
         // frame.
         for (let round = 0; round < 3; round++) {
+          // /workspaces moves slowly; TTL-gate its refetch so per-frame
+          // refreshes stop re-paying the host-side scan storm (issue 1,
+          // client half). A failed fetch silently keeps the last known
+          // list (cards fall back to id labels) — never an error banner.
+          const wantWorkspaces = this.workspacesAt === 0 || Date.now() - this.workspacesAt > WORKSPACES_TTL_MS
+          if (wantWorkspaces) this.workspacesAt = Date.now()
           const [ledgerResult, workspacesResult] = await Promise.allSettled([
             Promise.resolve().then(() => this.client.state({ excludeDone: this.state.doneCollapsed })),
-            Promise.resolve().then(() => this.client.workspaces()),
+            wantWorkspaces
+              ? Promise.resolve().then(() => this.client.workspaces())
+              : Promise.resolve<WorkspaceView[]>(this.state.workspaces),
           ])
           const patch: Partial<ControllerState> = {}
           const errors: string[] = []
@@ -238,8 +258,10 @@ export class BoardController {
               patch.filters = { ...this.state.filters, workspaceId: undefined }
               resetWorkspaceFilter = true
             }
-          } else {
-            errors.push(`workspaces: ${workspacesResult.reason instanceof Error ? workspacesResult.reason.message : String(workspacesResult.reason)}`)
+          } else if (wantWorkspaces && this.state.workspaces.length === 0) {
+            // Cold fetch failed (the first host-side scan may still be
+            // warming): keep the board usable and retry once in background.
+            this.scheduleWorkspacesRetry()
           }
           patch.error = errors.length > 0 ? errors.join('; ') : undefined
           this.setState(patch)
@@ -255,9 +277,24 @@ export class BoardController {
     return this.refreshInFlight
   }
 
+  /** One-shot background retry after a failed cold workspaces fetch; the
+   * board stays usable meanwhile (labels fall back to workspace ids). */
+  private scheduleWorkspacesRetry(): void {
+    if (this.workspacesRetry !== undefined) return
+    this.workspacesRetry = setTimeout(() => {
+      this.workspacesRetry = undefined
+      this.workspacesAt = 0
+      if (!this.disposed) void this.refresh()
+    }, 30_000)
+  }
+
   /** Stop everything. */
   dispose(): void {
     this.disposed = true
+    if (this.workspacesRetry !== undefined) {
+      clearTimeout(this.workspacesRetry)
+      this.workspacesRetry = undefined
+    }
     this.disposeStream?.()
     this.subscribers.clear()
   }
@@ -268,6 +305,15 @@ export class BoardController {
 
   /** Install or clear the host panel's close callback. */
   installCloseRequester(fn: (() => void) | undefined): void { this.closeRequester = fn }
+
+  /** Install or clear the right-sidebar tab opener; drives the toolbar button. */
+  installSidebarTabOpener(fn: (() => void) | undefined): void {
+    this.sidebarTabOpener = fn
+    this.setState({ sidebarTabSupported: fn !== undefined })
+  }
+
+  /** Open (or reveal) the board as a right-sidebar tab. */
+  openSidebarTab(): void { this.sidebarTabOpener?.() }
 
   /** Set the project filter (persisted). */
   setWorkspaceFilter(workspaceId?: string): void {
@@ -544,8 +590,27 @@ export class BoardController {
     }
   }
 
-  /** Move a task (user surface: done allowed). */
+  /**
+   * Move a task (user surface: done allowed). OPTIMISTIC (issue 2): the card
+   * jumps to the target column before the round-trip (the POST + host write
+   * could take seconds), the response summary confirms the record, and a
+   * failed POST rolls the card back. A background refresh keeps the snapshot
+   * authoritative without blocking the interaction.
+   */
   async move(id: string, ifVersion: number, status: string, options?: { archiveSessions?: boolean }): Promise<void> {
+    const prior = this.state.ledger.tasks.find(t => t.id === id)
+    if (prior !== undefined) {
+      const optimistic: TaskRecord = {
+        ...prior,
+        status: status as TaskRecord['status'],
+        version: ifVersion + 1,
+        updatedAt: Date.now(),
+        updatedBy: { kind: 'user' },
+        ...(prior.status === 'todo' && status === 'in_progress' ? { blocked: false } : {}),
+        ...(status !== 'in_progress' ? { claimedBy: undefined, claimedAt: undefined } : {}),
+      }
+      this.patchLedgerTask(optimistic)
+    }
     try {
       const result = await this.client.move(id, {
         ifVersion,
@@ -553,10 +618,28 @@ export class BoardController {
         ...(options?.archiveSessions !== undefined ? { archiveSessions: options.archiveSessions } : {}),
       })
       if (result.sessionArchive !== undefined) this.setState({ sessionArchive: { taskId: id, result: result.sessionArchive } })
-      await this.refresh()
+      // Fold the authoritative summary fields into the optimistic record.
+      const current = this.state.ledger.tasks.find(t => t.id === id)
+      if (current !== undefined) {
+        this.patchLedgerTask({ ...current, status: result.status, blocked: result.blocked, version: result.version })
+      }
+      void this.refresh()
     } catch (error) {
+      // Roll the optimistic card back (only if it is still our patched value).
+      const current = this.state.ledger.tasks.find(t => t.id === id)
+      if (prior !== undefined && current !== undefined && current.version === ifVersion + 1) {
+        this.patchLedgerTask(prior)
+      }
       this.setState({ error: error instanceof Error ? error.message : String(error) })
     }
+  }
+
+  /** Replace (or append) one task record in the local ledger snapshot. */
+  private patchLedgerTask(task: TaskRecord): void {
+    const tasks = this.state.ledger.tasks
+    const index = tasks.findIndex(t => t.id === task.id)
+    const next = index === -1 ? [...tasks, task] : tasks.map((t, i) => (i === index ? task : t))
+    this.setState({ ledger: { ...this.state.ledger, tasks: next } })
   }
 
   /**
