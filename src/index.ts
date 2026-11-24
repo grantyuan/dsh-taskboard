@@ -117,6 +117,13 @@ export function apply(ctx: Context): void {
       ? undefined
       : (sessionId: string) => requireWorkspaces().archiveSession!(sessionId),
   })
+  // Archive probe for auto-releasing dead holds (archived-session claims).
+  Object.defineProperty(workspaces, 'isSessionArchived', {
+    enumerable: true,
+    get: () => activeWorkspaces?.isSessionArchived === undefined
+      ? undefined
+      : (sessionId: string) => requireWorkspaces().isSessionArchived!(sessionId),
+  })
   const modelProviders = (): string[] | undefined => {
     try {
       const llm = activeWorkspaceContext?.get('llm') as { listProviders?: () => Array<{ id: string }> } | undefined
@@ -227,6 +234,7 @@ export function apply(ctx: Context): void {
             const ws = wsCtx.workspaceRegistry.get(workspaceId as never)
             if (ws !== undefined) await ws.attachSession(sessionId as never)
           },
+          isSessionArchived: id => wsCtx.workspaceRegistry.archivedSessionIds.includes(id as never),
         },
         events,
         now,

@@ -291,6 +291,9 @@ export class ExternalSessionSyncService {
     const interval = deps.scanIntervalMs ?? DEFAULT_SCAN_INTERVAL_MS
     if (interval > 0) {
       this.scanTimer = setInterval(() => {
+        void this.releaseArchivedClaims().catch(error => {
+          console.error('[dsh-taskboard] archived-claim release failed:', error)
+        })
         void this.scanActiveSessions().catch(error => {
           console.error('[dsh-taskboard] external session scan failed:', error)
         })
@@ -304,6 +307,57 @@ export class ExternalSessionSyncService {
     if (this.scanTimer !== undefined) {
       clearInterval(this.scanTimer as NodeJS.Timeout)
       this.scanTimer = undefined
+    }
+  }
+
+  /**
+   * Always-on reclaim: a claim held by an ARCHIVED session is dead
+   * ownership — the holder can never work the card again, and without a
+   * release every other session stays locked out (fail-open only on
+   * authoritative archive evidence from the workspace face). Runs on every
+   * scan tick, independent of the syncExternalSessions setting, so a
+   * stranded card returns to `todo` by itself instead of waiting for an
+   * agent to try and touch it.
+   *
+   * Skips: sessions the execution service still manages (their settlement
+   * path releases the claim itself) and tasks with an execution still
+   * marked running (snatching a card out from under a live run would
+   * misattribute that run's settlement).
+   */
+  async releaseArchivedClaims(): Promise<void> {
+    if (this.deps.workspaces.isSessionArchived === undefined) return
+    const isArchived = this.deps.workspaces.isSessionArchived
+    const snapshot = this.deps.store.snapshot()
+    for (const task of snapshot.tasks) {
+      if (task.trashedAt !== undefined) continue
+      if (task.status !== 'in_progress') continue
+      const holder = task.claimedBy
+      if (holder === undefined || typeof holder !== 'string') continue
+      if (isArchived(holder) !== true) continue
+      if (this.deps.isSessionManaged?.(holder) === true) continue
+      if (task.executions.some(e => e.outcome === 'running')) continue
+      const now = this.deps.now()
+      await this.deps.store.mutate('task-updated', (ledger) => {
+        const current = ledger.tasks.find(t => t.id === task.id)
+        if (current === undefined || current.trashedAt !== undefined) return undefined
+        // Recheck inside the serial queue: the world may have moved since the snapshot.
+        if (current.status !== 'in_progress' || current.claimedBy !== holder) return undefined
+        if (current.executions.some(e => e.outcome === 'running')) return undefined
+        current.status = 'todo'
+        delete current.claimedBy
+        delete current.claimedAt
+        current.updatedAt = now
+        current.updatedBy = { kind: 'system' }
+        current.comments.push({
+          id: newCommentId(),
+          body: normalizeBody('[系统] 原领取会话已归档，无法继续工作；占用已自动释放，任务退回待办。'),
+          systemKey: 'sys.claimReleasedArchived',
+          threadId: holder,
+          version: 1,
+          createdAt: now,
+        })
+        return [current]
+      })
     }
   }
 

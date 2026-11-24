@@ -106,6 +106,13 @@ export interface AgentComposition {
 export interface ExecutionWorkspaceFace {
   get(id: string): { id: string; path: string } | undefined
   attach(workspaceId: string, sessionId: string): Promise<void>
+  /**
+   * Authoritative archive lookup: true ONLY when the runtime registry
+   * records the session as archived. The start gate releases a claim owned
+   * by an archived session on true; absent capability or false/undefined
+   * keeps the strict 'already in progress' refusal.
+   */
+  isSessionArchived?(sessionId: string): boolean | undefined
 }
 
 /** Narrow event-bus face for settlement listening. */
@@ -619,6 +626,15 @@ export class ExecutionService {
       // card unrunnable until it was pushed back through todo (issue #50).
       // A run that passes this gate re-claims the card, so the orphan state
       // repairs itself instead of persisting.
+      // A claim owned by an ARCHIVED session is dead ownership: the holder
+      // can never act on the card again. Release it here (only on
+      // authoritative archive evidence) so the run below re-claims the card
+      // instead of the refusal stranding it forever.
+      if (target.claimedBy !== undefined
+        && this.deps.workspaces.isSessionArchived?.(target.claimedBy) === true) {
+        delete target.claimedBy
+        delete target.claimedAt
+      }
       if (target.executions.some(e => e.outcome === 'running') || target.claimedBy !== undefined) {
         gate = 'task is already in progress'
         return undefined

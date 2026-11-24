@@ -184,6 +184,13 @@ export interface WorkspaceFace {
   sessionIds?(workspaceId: string): string[] | undefined
   /** Archive one session durably (when supported by runtime workspaceRegistry). */
   archiveSession?(sessionId: string): Promise<void>
+  /**
+   * Authoritative archive lookup (when supported by runtime workspaceRegistry):
+   * true ONLY when the registry records the session as archived. Absent
+   * capability or false means "not known archived" — callers must keep the
+   * strict foreign-claim guard.
+   */
+  isSessionArchived?(sessionId: string): boolean
 }
 
 /** Adapt the real registry to the narrow face. */
@@ -209,6 +216,7 @@ export function workspaceFace(registry: WorkspaceRegistry): WorkspaceFace {
     ...(typeof registry.archiveSession === 'function'
       ? { archiveSession: (sessionId: string) => registry.archiveSession(sessionId as Parameters<WorkspaceRegistry['archiveSession']>[0]) }
       : {}),
+    isSessionArchived: sessionId => registry.archivedSessionIds.includes(sessionId as never),
   }
 }
 
@@ -381,10 +389,26 @@ function versionGuard(task: TaskRecord, ifVersion: number | undefined): void {
   }
 }
 
-/** Prevent another session from moving or deleting an actively held task. */
-function exclusiveHoldGuard(task: TaskRecord, sessionId: string): void {
+/**
+ * Prevent another session from moving or deleting an actively held task.
+ * A hold owned by an ARCHIVED session is dead ownership: rather than strand
+ * the card on a session that can never act again, release the stale claim in
+ * place (the draft mutation persists it) and let the caller proceed. Unknown
+ * or live holders keep the strict guard.
+ */
+function exclusiveHoldGuard(
+  task: TaskRecord,
+  sessionId: string,
+  isArchived?: (holder: string) => boolean | undefined,
+): void {
   if (task.status === 'in_progress' && task.claimedBy !== undefined && task.claimedBy !== sessionId) {
-    throw new ToolError(ERR.forbidden, `task is held by session ${task.claimedBy}; never take over another session's claim`)
+    const holder = task.claimedBy
+    if (isArchived?.(holder) === true) {
+      delete task.claimedBy
+      delete task.claimedAt
+      return
+    }
+    throw new ToolError(ERR.forbidden, `task is held by session ${holder}; never take over another session's claim`)
   }
 }
 
@@ -798,8 +822,10 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           }
           // Exclusive hold: while a task is in_progress under a session
           // (explicit claimedBy — an agent claim or a live execution), no other
-          // session may move it (that would be a takeover).
-          exclusiveHoldGuard(task, actor.sessionId)
+          // session may move it (that would be a takeover). A hold owned by an
+          // archived session is released here instead of blocking (fail-open
+          // only on authoritative archive evidence).
+          exclusiveHoldGuard(task, actor.sessionId, holder => deps.workspaces.isSessionArchived?.(holder))
           // Claim boundary: the calling session must belong to the task's
           // project — either through its own workspace root (historical rule)
           // or, when the board enables it, through one of its linked multi-root
@@ -950,7 +976,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           const { index, task } = liveTaskAt(ledger, args.id)
           versionGuard(task, args.ifVersion)
           assertNotReferenced(ledger, task.id)
-          exclusiveHoldGuard(task, actor.sessionId)
+          exclusiveHoldGuard(task, actor.sessionId, holder => deps.workspaces.isSessionArchived?.(holder))
           if (task.executions.some(e => e.outcome === 'running')) {
             throw new ToolError(ERR.invalidInput, '任务有正在运行的执行（先在 GUI 取消或等它结束再删除）')
           }
